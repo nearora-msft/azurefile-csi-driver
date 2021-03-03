@@ -140,6 +140,8 @@ type Driver struct {
 	volumeLocks *volumeLocks
 	// a map storing all created volumes by this driver <volumeName, accountName>
 	volumeMap sync.Map
+	// a map storing all secret names written by this driver <secretCacheKey, "">
+	secretCacheMap sync.Map
 	// a timed cache storing acount search history
 	accountSearchCache *azcache.TimedCache
 }
