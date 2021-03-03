@@ -40,6 +40,7 @@ import (
 	csicommon "sigs.k8s.io/azurefile-csi-driver/pkg/csi-common"
 	"sigs.k8s.io/azurefile-csi-driver/pkg/mounter"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/fileclient"
+	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	azure "sigs.k8s.io/cloud-provider-azure/pkg/provider"
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
@@ -139,6 +140,8 @@ type Driver struct {
 	volumeLocks *volumeLocks
 	// a map storing all created volumes by this driver <volumeName, accountName>
 	volumeMap sync.Map
+	// a timed cache storing acount search history
+	accountSearchCache *azcache.TimedCache
 }
 
 // NewDriver Creates a NewCSIDriver object. Assumes vendor version is equal to driver version &
@@ -151,6 +154,13 @@ func NewDriver(nodeID string) *Driver {
 	driver.volLockMap = newLockMap()
 	driver.subnetLockMap = newLockMap()
 	driver.volumeLocks = newVolumeLocks()
+	cache, err := azcache.NewTimedcache(time.Minute, func(key string) (interface{}, error) {
+		return nil, nil
+	})
+	if err != nil {
+		klog.Fatalf("%v", err)
+	}
+	driver.accountSearchCache = cache
 	return &driver
 }
 

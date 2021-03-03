@@ -39,6 +39,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/fileclient"
+	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	"sigs.k8s.io/cloud-provider-azure/pkg/metrics"
 	azure "sigs.k8s.io/cloud-provider-azure/pkg/provider"
 )
@@ -221,7 +222,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		CreateAccount:             createAccount,
 	}
 
-	var accountKey string
+	var accountKey, lockKey string
 	var accountFoundInCache bool
 	accountName := account
 	if len(req.GetSecrets()) == 0 && accountName == "" {
@@ -230,24 +231,34 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			accountFoundInCache = true
 			accountName = v.(string)
 		} else {
-			lockKey := sku + accountKind + resourceGroup + location
-			d.volLockMap.LockEntry(lockKey)
-			err = wait.ExponentialBackoff(d.cloud.RequestBackoff(), func() (bool, error) {
-				var retErr error
-				accountName, accountKey, retErr = d.cloud.EnsureStorageAccount(accountOptions, fileShareAccountNamePrefix)
-				if isRetriableError(retErr) {
-					klog.Warningf("EnsureStorageAccount(%s) failed with error(%v), waiting for retrying", account, retErr)
-					if strings.Contains(strings.ToLower(retErr.Error()), strings.ToLower(tooManyRequests)) {
-						klog.Warningf("sleep %d more seconds, waiting for account list throttling complete", throttlingSleepSeconds)
-						time.Sleep(throttlingSleepSeconds * time.Second)
-					}
-					return false, nil
-				}
-				return true, retErr
-			})
-			d.volLockMap.UnlockEntry(lockKey)
+			lockKey = sku + accountKind + resourceGroup + location
+			// search in cache first
+			cache, err := d.accountSearchCache.Get(lockKey, azcache.CacheReadTypeDefault)
 			if err != nil {
-				return nil, status.Errorf(codes.Internal, "failed to ensure storage account: %v", err)
+				return nil, err
+			}
+			if cache != nil {
+				accountName = cache.(string)
+			} else {
+				d.volLockMap.LockEntry(lockKey)
+				err = wait.ExponentialBackoff(d.cloud.RequestBackoff(), func() (bool, error) {
+					var retErr error
+					accountName, accountKey, retErr = d.cloud.EnsureStorageAccount(accountOptions, fileShareAccountNamePrefix)
+					if isRetriableError(retErr) {
+						klog.Warningf("EnsureStorageAccount(%s) failed with error(%v), waiting for retrying", account, retErr)
+						if strings.Contains(strings.ToLower(retErr.Error()), strings.ToLower(tooManyRequests)) {
+							klog.Warningf("sleep %d more seconds, waiting for account list throttling complete", throttlingSleepSeconds)
+							time.Sleep(throttlingSleepSeconds * time.Second)
+						}
+						return false, nil
+					}
+					return true, retErr
+				})
+				d.volLockMap.UnlockEntry(lockKey)
+				if err != nil {
+					return nil, status.Errorf(codes.Internal, "failed to ensure storage account: %v", err)
+				}
+				d.accountSearchCache.Set(lockKey, accountName)
 			}
 		}
 	}
@@ -294,6 +305,10 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			}
 			// release volume lock first to prevent deadlock
 			d.volumeLocks.Release(volName)
+			// clean search cache
+			if err := d.accountSearchCache.Delete(lockKey); err != nil {
+				return nil, err
+			}
 			return d.CreateVolume(ctx, req)
 		}
 		return nil, fmt.Errorf("failed to create file share(%s) on account(%s) type(%s) rg(%s) location(%s) size(%d), error: %v", validFileShareName, account, sku, resourceGroup, location, fileShareSize, err)
