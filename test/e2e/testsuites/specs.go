@@ -105,6 +105,17 @@ func (pod *PodDetails) SetupWithDynamicVolumes(client clientset.Interface, names
 	return tpod, cleanupFuncs
 }
 
+func (pod *PodDetails) SetupWithDynamicVolumesWithSubpath(client clientset.Interface, namespace *v1.Namespace, csiDriver driver.DynamicPVTestDriver, storageClassParameters map[string]string) (*TestPod, []func()) {
+	tpod := NewTestPod(client, namespace, pod.Cmd, pod.IsWindows)
+	cleanupFuncs := make([]func(), 0)
+	for n, v := range pod.Volumes {
+		tpvc, funcs := v.SetupDynamicPersistentVolumeClaim(client, namespace, csiDriver, storageClassParameters)
+		cleanupFuncs = append(cleanupFuncs, funcs...)
+		tpod.SetupVolumeMountWithSubpath(tpvc.persistentVolumeClaim, fmt.Sprintf("%s%d", v.VolumeMount.NameGenerate, n+1), fmt.Sprintf("%s%d", v.VolumeMount.MountPathGenerate, n+1), "test", v.VolumeMount.ReadOnly)
+	}
+	return tpod, cleanupFuncs
+}
+
 // SetupWithDynamicMultipleVolumes each pod will be mounted with multiple volumes with different storage account types
 func (pod *PodDetails) SetupWithDynamicMultipleVolumes(client clientset.Interface, namespace *v1.Namespace, csiDriver driver.DynamicPVTestDriver) (*TestPod, []func()) {
 	tpod := NewTestPod(client, namespace, pod.Cmd, pod.IsWindows)
@@ -135,6 +146,18 @@ func (pod *PodDetails) SetupWithPreProvisionedVolumes(client clientset.Interface
 		} else {
 			tpod.SetupVolume(tpvc.persistentVolumeClaim, fmt.Sprintf("%s%d", v.VolumeMount.NameGenerate, n+1), fmt.Sprintf("%s%d", v.VolumeMount.MountPathGenerate, n+1), v.VolumeMount.ReadOnly)
 		}
+	}
+	return tpod, cleanupFuncs
+}
+
+func (pod *PodDetails) SetupWithPreProvisionedVolumeWithSubpath(client clientset.Interface, namespace *v1.Namespace, csiDriver driver.PreProvisionedVolumeTestDriver) (*TestPod, []func()) {
+	tpod := NewTestPod(client, namespace, pod.Cmd, pod.IsWindows)
+	cleanupFuncs := make([]func(), 0)
+	for n, v := range pod.Volumes {
+		tpvc, funcs := v.SetupPreProvisionedPersistentVolumeClaim(client, namespace, csiDriver)
+		cleanupFuncs = append(cleanupFuncs, funcs...)
+
+		tpod.SetupVolumeMountWithSubpath(tpvc.persistentVolumeClaim, fmt.Sprintf("%s%d", v.VolumeDevice.NameGenerate, n+1), v.VolumeDevice.DevicePath, "test", false)
 	}
 	return tpod, cleanupFuncs
 }

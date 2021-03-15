@@ -221,7 +221,7 @@ var _ = ginkgo.Describe("Pre-Provisioned", func() {
 		test.Run(cs, ns)
 	})
 
-	ginkgo.It("should use provided credentials [file.csi.azure.com] [Windows]", func() {
+	ginkgo.It("should use provided credentials c", func() {
 		// Az tests are not yet working for in tree driver
 		skipIfUsingInTreeVolumePlugin()
 
@@ -263,6 +263,48 @@ var _ = ginkgo.Describe("Pre-Provisioned", func() {
 			Azurefile: azurefileDriver,
 		}
 		test.Run(cs, ns)
+	})
+
+	ginkgo.It(fmt.Sprintf("should use a pre-provisioned volume to create a subpath and use the subpath in a pod [file.csi.azure.com] [Windows]"), func() {
+		// Az tests are not yet working for in tree driver
+		skipIfUsingInTreeVolumePlugin()
+
+		req := makeCreateVolumeReq("pre-provisioned-subpath")
+		resp, err := azurefileDriver.CreateVolume(context.Background(), req)
+		if err != nil {
+			ginkgo.Fail(fmt.Sprintf("create volume error: %v", err))
+		}
+		volumeID = resp.Volume.VolumeId
+		ginkgo.By(fmt.Sprintf("Successfully provisioned AzureFile volume: %q\n", volumeID))
+
+		volumeSize := fmt.Sprintf("%dGi", defaultDiskSize)
+		reclaimPolicy := v1.PersistentVolumeReclaimRetain
+		volumeBindingMode := storagev1.VolumeBindingImmediate
+
+		pod := testsuites.PodDetails{
+			Volumes: []testsuites.VolumeDetails{
+				{
+					VolumeID:          volumeID,
+					FSType:            "ext4",
+					ClaimSize:         volumeSize,
+					ReclaimPolicy:     &reclaimPolicy,
+					VolumeBindingMode: &volumeBindingMode,
+					VolumeMount: testsuites.VolumeMountDetails{
+						NameGenerate:      "test-volume-",
+						MountPathGenerate: "/mnt/test-",
+					},
+				},
+			},
+			IsWindows: isWindowsCluster,
+		}
+
+		test := testsuites.PreProvisionedVolumeSubpathTest{
+			CSIDriver: testDriver,
+			Pod:       pod,
+		}
+
+		test.Run(cs, ns)
+
 	})
 })
 
