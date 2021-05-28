@@ -14,7 +14,7 @@
 
 PKG = sigs.k8s.io/azurefile-csi-driver
 GIT_COMMIT ?= $(shell git rev-parse HEAD)
-REGISTRY ?= andyzhangx
+REGISTRY ?= nearora4
 REGISTRY_NAME ?= $(shell echo $(REGISTRY) | sed "s/.azurecr.io//g")
 IMAGE_NAME ?= azurefile-csi
 IMAGE_VERSION ?= v1.3.0

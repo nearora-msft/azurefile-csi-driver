@@ -55,7 +55,10 @@ func GetCloudProvider(kubeconfig string) (*azure.Cloud, error) {
 	if kubeClient != nil {
 		klog.V(2).Infof("reading cloud config from secret")
 		az.KubeClient = kubeClient
-		az.InitializeCloudFromSecret()
+		err := az.InitializeCloudFromSecret()
+		if err != nil {
+			klog.V(2).Infof("GetCloudProvider: failed to initialize cloud from secret %s/%s: %v", az.SecretNamespace, az.SecretName, err)
+		}
 	}
 
 	if az.TenantID == "" || az.SubscriptionID == "" {

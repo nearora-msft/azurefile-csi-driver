@@ -175,7 +175,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		protocol = nfs
 		enableHTTPSTrafficOnly = false
 		// default to Premium_LRS
-		sku = string(storage.SkuTierPremium)
+		sku = string(storage.SkuNamePremiumLRS)
 		shareProtocol = storage.EnabledProtocolsNFS
 		// NFS protocol does not need account key
 		storeAccountKey = falseValue
@@ -236,6 +236,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		CreateAccount:                           createAccount,
 		EnableLargeFileShare:                    enableLFS,
 		DisableFileServiceDeleteRetentionPolicy: disableDeleteRetentionPolicy,
+		CreatePrivateEndpoint:                   true,
 	}
 
 	var accountKey, lockKey string

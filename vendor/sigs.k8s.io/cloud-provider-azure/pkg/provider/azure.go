@@ -49,6 +49,7 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/fileclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/interfaceclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/loadbalancerclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/privateendpointclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/publicipclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/routeclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/routetableclient"
@@ -254,6 +255,7 @@ type Cloud struct {
 	RouteTablesClient               routetableclient.Interface
 	LoadBalancerClient              loadbalancerclient.Interface
 	PublicIPAddressesClient         publicipclient.Interface
+	PrivateEndpointsClient          privateendpointclient.Interface
 	SecurityGroupsClient            securitygroupclient.Interface
 	VirtualMachinesClient           vmclient.Interface
 	StorageAccountClient            storageaccountclient.Interface
@@ -639,6 +641,7 @@ func (az *Cloud) configAzureClients(
 	loadBalancerClientConfig := azClientConfig.WithRateLimiter(az.Config.LoadBalancerRateLimit)
 	securityGroupClientConfig := azClientConfig.WithRateLimiter(az.Config.SecurityGroupRateLimit)
 	publicIPClientConfig := azClientConfig.WithRateLimiter(az.Config.PublicIPAddressRateLimit)
+	privateENdpointClientConfig := azClientConfig
 	// TODO(ZeroMagic): add azurefileRateLimit
 	fileClientConfig := azClientConfig.WithRateLimiter(nil)
 	vmasClientConfig := azClientConfig.WithRateLimiter(az.Config.AvailabilitySetRateLimit)
@@ -686,6 +689,7 @@ func (az *Cloud) configAzureClients(
 	az.LoadBalancerClient = loadbalancerclient.New(loadBalancerClientConfig)
 	az.SecurityGroupsClient = securitygroupclient.New(securityGroupClientConfig)
 	az.PublicIPAddressesClient = publicipclient.New(publicIPClientConfig)
+	az.PrivateEndpointsClient = privateendpointclient.New(privateENdpointClientConfig)
 	az.FileClient = fileclient.New(fileClientConfig)
 	az.AvailabilitySetsClient = vmasclient.New(vmasClientConfig)
 	az.ZoneClient = zoneclient.New(zoneClientConfig)

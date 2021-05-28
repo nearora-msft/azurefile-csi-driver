@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
 	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-02-01/storage"
 	"github.com/Azure/go-autorest/autorest/to"
 
@@ -40,6 +41,7 @@ type AccountOptions struct {
 	EnableHTTPSTrafficOnly                  bool
 	CreateAccount                           bool
 	EnableLargeFileShare                    bool
+	CreatePrivateEndpoint                   bool
 	DisableFileServiceDeleteRetentionPolicy bool
 	IsHnsEnabled                            *bool
 	EnableNfsV3                             *bool
@@ -112,11 +114,11 @@ func (az *Cloud) getStorageAccounts(accountOptions *AccountOptions) ([]accountWi
 				}
 			}
 
-			if to.Bool(acct.IsHnsEnabled) != to.Bool(accountOptions.IsHnsEnabled) {
+			if accountOptions.IsHnsEnabled != nil && to.Bool(acct.IsHnsEnabled) != to.Bool(accountOptions.IsHnsEnabled) {
 				continue
 			}
 
-			if to.Bool(acct.EnableNfsV3) != to.Bool(accountOptions.EnableNfsV3) {
+			if accountOptions.EnableNfsV3 != nil && to.Bool(acct.EnableNfsV3) != to.Bool(accountOptions.EnableNfsV3) {
 				continue
 			}
 			accounts = append(accounts, accountWithLocation{Name: *acct.Name, StorageType: storageType, Location: location})
@@ -262,6 +264,20 @@ func (az *Cloud) EnsureStorageAccount(accountOptions *AccountOptions, genAccount
 					return "", "", err
 				}
 			}
+
+			if accountOptions.CreatePrivateEndpoint {
+				klog.V(2).Infof("Inside create private endpoint")
+				storageAccount, rerr := az.StorageAccountClient.GetProperties(ctx, az.ResourceGroup, accountName)
+				if rerr != nil {
+					return "", "", fmt.Errorf("Failed to retrieve storage  account properties", rerr)
+				}
+				klog.V(2).Infof("Retrieved storage account, will now create private endpoint")
+				err := CreatePrivateEndpoint(az, storageAccount.ID)
+				if err != nil {
+					return "", "", fmt.Errorf("Failed to create private endpoint", err)
+				}
+			}
+
 		}
 	}
 
@@ -272,6 +288,28 @@ func (az *Cloud) EnsureStorageAccount(accountOptions *AccountOptions, genAccount
 	}
 
 	return accountName, accountKey, nil
+}
+
+func CreatePrivateEndpoint(az *Cloud, resourceId *string) error {
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
+	klog.V(2).Infof("Now create subnets client")
+	subnet, err := az.SubnetsClient.Get(ctx, az.resourceGroup, az.cloud.VnetName, az.cloud.SubnetName, "")
+	if err != nil {
+		klog.V(2).Infof("Subnet client couldn't be created")
+	}
+	klog.V(2).Infof("Created subnets client successfully")
+
+	privateEndpointProperties := &network.PrivateEndpointProperties{Subnet: &subnet}
+	rerr := az.PrivateEndpointsClient.CreateOrUpdate(ctx, resourceId, "TestEndpoint", privateEndpointProperties)
+
+	if rerr != nil {
+		return rerr
+	}
+
+	klog.V(2).Infof("Private endpoint created successfully")
+	return nil
 }
 
 // AddStorageAccountTags add tags to storage account
