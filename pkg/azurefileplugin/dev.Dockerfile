@@ -14,6 +14,10 @@
 
 FROM mcr.microsoft.com/aks/fundamental/base-ubuntu:v0.0.5
 RUN apt-get update && apt-get install -y ca-certificates cifs-utils util-linux e2fsprogs mount udev xfsprogs nfs-common
+RUN wget https://aka.ms/downloadazcopy-v10-linux
+RUN tar -xvzf downloadazcopy-v10-linux
+#This will help us call azcopy dircetly from the command line
+RUN cp ./azcopy_linux_amd64_10.11.0/azcopy /usr/bin
 LABEL maintainers="andyzhangx"
 LABEL description="AzureFile CSI Driver"
 

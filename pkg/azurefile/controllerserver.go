@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 
+	utilexec "k8s.io/utils/exec"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/fileclient"
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	"sigs.k8s.io/cloud-provider-azure/pkg/metrics"
@@ -177,6 +178,21 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	if protocol == nfs && fsType != "" && fsType != nfs {
 		return nil, status.Errorf(codes.InvalidArgument, "fsType(%s) is not supported with protocol(%s)", fsType, protocol)
 	}
+
+	klog.Infof("Starting to create a command with azcopy")
+	exec := utilexec.New()
+	cmd := exec.Command("azcopy",
+		"copy",
+		"'https://testsa31.file.core.windows.net/tbfileshare/testdirectory1/newfileshare1?sv=2020-08-04&ss=bfqt&srt=sco&sp=rwdlacuptfx&se=2021-07-30T04:33:04Z&st=2021-07-29T20:33:04Z&spr=https&sig=vijkmGTxjV%2BC5lT%2BZ4F8gEMst1Uz0hn9woEkyXz%2FGMI%3D&sharesnapshot=2021-07-28T20:42:42.0000000Z'",
+		"'https://testsa31.file.core.windows.net/restoredfilesharev4?sv=2020-08-04&ss=bfqt&srt=sco&sp=rwdlacupitfx&se=2021-07-30T06:46:03Z&st=2021-07-29T22:46:03Z&spr=https&sig=2yEm6fN3lyljTCHNDGjvqhVYw1CdQnqoKIRyF4gVnc0%3D'",
+		"--recursive",
+	)
+	klog.Infof("Starting to run the command with azcopy")
+	err := cmd.Run()
+	if err != nil {
+		klog.Infof("Error occured while running azcopy %v", err)
+	}
+	klog.Infof("Running azcopy complete")
 
 	enableHTTPSTrafficOnly := true
 	shareProtocol := storage.EnabledProtocolsSMB
