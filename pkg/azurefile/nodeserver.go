@@ -53,6 +53,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	}
 
 	volumeID := req.GetVolumeId()
+	volumeMountGroup := volCap.GetMount().GetVolumeMountGroup()
 
 	context := req.GetVolumeContext()
 	if context != nil && strings.EqualFold(context[ephemeralField], trueValue) {
@@ -75,7 +76,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		return nil, status.Error(codes.InvalidArgument, "Staging target not provided")
 	}
 
-	mountOptions := []string{"bind"}
+	mountOptions := []string{"bind", fmt.Sprintf("gid=%s", volumeMountGroup)}
 	if req.GetReadonly() {
 		mountOptions = append(mountOptions, "ro")
 	}
@@ -142,6 +143,17 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	volumeID := req.GetVolumeId()
 	context := req.GetVolumeContext()
 	mountFlags := req.GetVolumeCapability().GetMount().GetMountFlags()
+	volumeMountGroup := req.GetVolumeCapability().GetMount().GetVolumeMountGroup()
+	if volumeMountGroup != "" {
+		for _, mountFlag := range mountFlags {
+			if strings.HasPrefix(mountFlag, "gid") {
+				kvpair := strings.Split(mountFlag, "=")
+				if !strings.EqualFold(volumeMountGroup, kvpair[1]) {
+					return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("gid(%s) in storageClass and pod fsgroup(%s) are not equal", kvpair[1], volumeMountGroup))
+				}
+			}
+		}
+	}
 
 	_, accountName, accountKey, fileShareName, diskName, err := d.GetAccountInfo(volumeID, req.GetSecrets(), context)
 	if err != nil {
