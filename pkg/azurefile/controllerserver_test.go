@@ -26,10 +26,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
-	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/subnetclient/mocksubnetclient"
+	"github.com/Azure/azure-storage-file-go/azfile"
+	"sigs.k8s.io/azurefile-csi-driver/pkg/azurefile/mockcorev1"
+	"sigs.k8s.io/azurefile-csi-driver/pkg/azurefile/mockkubeclient"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
 	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-02-01/storage"
 	azure2 "github.com/Azure/go-autorest/autorest/azure"
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -44,6 +46,7 @@ import (
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/fileclient/mockfileclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/storageaccountclient/mockstorageaccountclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/subnetclient/mocksubnetclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmclient/mockvmclient"
 	azure "sigs.k8s.io/cloud-provider-azure/pkg/provider"
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
@@ -938,6 +941,79 @@ func TestCreateVolume(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "Account limit exceeded",
+			testFunc: func(t *testing.T) {
+				name := "baz"
+				sku := "sku"
+				kind := "StorageV2"
+				location := "centralus"
+				value := "foo bar"
+				accounts := []storage.Account{
+					{Name: &name, Sku: &storage.Sku{Name: storage.SkuName(sku)}, Kind: storage.Kind(kind), Location: &location},
+				}
+				keys := storage.AccountListKeysResult{
+					Keys: &[]storage.AccountKey{
+						{Value: &value},
+					},
+				}
+
+				allParam := map[string]string{
+					skuNameField:            "premium",
+					storageAccountTypeField: "stoacctype",
+					locationField:           "loc",
+					storageAccountField:     "stoacc",
+					resourceGroupField:      "rg",
+					shareNameField:          "",
+					diskNameField:           "diskname",
+					fsTypeField:             "",
+					storeAccountKeyField:    "storeaccountkey",
+					secretNamespaceField:    "default",
+				}
+
+				req := &csi.CreateVolumeRequest{
+					Name:               "random-vol-name-valid-request",
+					VolumeCapabilities: stdVolCap,
+					CapacityRange:      lessThanPremCapRange,
+					Parameters:         allParam,
+				}
+
+				d := NewFakeDriver()
+				d.cloud = &azure.Cloud{}
+				d.cloud.KubeClient = fake.NewSimpleClientset()
+				ctrl := gomock.NewController(t)
+				defer ctrl.Finish()
+
+				mockFileClient := mockfileclient.NewMockInterface(ctrl)
+				d.cloud.FileClient = mockFileClient
+
+				mockStorageAccountsClient := mockstorageaccountclient.NewMockInterface(ctrl)
+				d.cloud.StorageAccountClient = mockStorageAccountsClient
+				tagValue := "TestTagValue"
+
+				first := mockFileClient.EXPECT().CreateFileShare(gomock.Any(), gomock.Any(), gomock.Any()).Return(fmt.Errorf(accountLimitExceedManagementAPI))
+				second := mockFileClient.EXPECT().CreateFileShare(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+				gomock.InOrder(first, second)
+				mockStorageAccountsClient.EXPECT().ListKeys(gomock.Any(), gomock.Any(), gomock.Any()).Return(keys, nil).AnyTimes()
+				mockStorageAccountsClient.EXPECT().ListByResourceGroup(gomock.Any(), gomock.Any()).Return(accounts, nil).AnyTimes()
+				mockStorageAccountsClient.EXPECT().Create(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+				mockStorageAccountsClient.EXPECT().GetProperties(gomock.Any(), gomock.Any(), gomock.Any()).Return(storage.Account{Tags: map[string]*string{"TestKey": &tagValue}}, nil).AnyTimes()
+				mockStorageAccountsClient.EXPECT().Update(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+				mockFileClient.EXPECT().GetFileShare(gomock.Any(), gomock.Any(), gomock.Any()).Return(storage.FileShare{FileShareProperties: &storage.FileShareProperties{ShareQuota: &fakeShareQuota}}, nil).AnyTimes()
+
+				d.AddControllerServiceCapabilities(
+					[]csi.ControllerServiceCapability_RPC_Type{
+						csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
+					})
+
+				ctx := context.Background()
+
+				_, err := d.CreateVolume(ctx, req)
+				if !reflect.DeepEqual(err, nil) {
+					t.Errorf("Unexpected error: %v", err)
+				}
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -1273,80 +1349,89 @@ func TestControllerPublishVolume(t *testing.T) {
 			Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
 		},
 	}
-	multiWriterVolCap := csi.VolumeCapability{
-		AccessType: &csi.VolumeCapability_Mount{
-			Mount: &csi.VolumeCapability_MountVolume{},
-		},
-		AccessMode: &csi.VolumeCapability_AccessMode{
-			Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
-		},
-	}
-	readOnlyVolCap := csi.VolumeCapability{
-		AccessType: &csi.VolumeCapability_Mount{
-			Mount: &csi.VolumeCapability_MountVolume{},
-		},
-		AccessMode: &csi.VolumeCapability_AccessMode{
-			Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY,
-		},
-	}
+	// multiWriterVolCap := csi.VolumeCapability{
+	// 	AccessType: &csi.VolumeCapability_Mount{
+	// 		Mount: &csi.VolumeCapability_MountVolume{},
+	// 	},
+	// 	AccessMode: &csi.VolumeCapability_AccessMode{
+	// 		Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+	// 	},
+	// }
+	// readOnlyVolCap := csi.VolumeCapability{
+	// 	AccessType: &csi.VolumeCapability_Mount{
+	// 		Mount: &csi.VolumeCapability_MountVolume{},
+	// 	},
+	// 	AccessMode: &csi.VolumeCapability_AccessMode{
+	// 		Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY,
+	// 	},
+	// }
 
 	tests := []struct {
 		desc        string
 		req         *csi.ControllerPublishVolumeRequest
 		expectedErr error
 	}{
+		// {
+		// 	desc:        "Volume ID missing",
+		// 	req:         &csi.ControllerPublishVolumeRequest{},
+		// 	expectedErr: status.Error(codes.InvalidArgument, "Volume ID not provided"),
+		// },
+		// {
+		// 	desc: "Volume capability missing",
+		// 	req: &csi.ControllerPublishVolumeRequest{
+		// 		VolumeId: "vol_1",
+		// 	},
+		// 	expectedErr: status.Error(codes.InvalidArgument, "Volume capability not provided"),
+		// },
+		// {
+		// 	desc: "Node ID missing",
+		// 	req: &csi.ControllerPublishVolumeRequest{
+		// 		VolumeId:         "vol_1",
+		// 		VolumeCapability: &stdVolCap,
+		// 	},
+		// 	expectedErr: status.Error(codes.InvalidArgument, "Node ID not provided"),
+		// },
+		// {
+		// 	desc: "Valid request disk name empty",
+		// 	req: &csi.ControllerPublishVolumeRequest{
+		// 		VolumeId:         "vol_1",
+		// 		VolumeCapability: &stdVolCap,
+		// 		NodeId:           "vm3",
+		// 	},
+		// 	expectedErr: nil,
+		// },
+		// {
+		// 	desc: "Get account info returns error",
+		// 	req: &csi.ControllerPublishVolumeRequest{
+		// 		VolumeId:         "vol_2#f5713de20cde511e8ba4900#fileshare#diskname",
+		// 		VolumeCapability: &stdVolCap,
+		// 		NodeId:           "vm3",
+		// 	},
+		// 	expectedErr: status.Error(codes.InvalidArgument, "GetAccountInfo(vol_2#f5713de20cde511e8ba4900#fileshare#diskname) failed with error: Retriable: false, RetryAfter: 0s, HTTPStatusCode: 502, RawError: instance not found"),
+		// },
+		// {
+		// 	desc: "Unsupported access mode",
+		// 	req: &csi.ControllerPublishVolumeRequest{
+		// 		VolumeId:         "vol_1#f5713de20cde511e8ba4900#fileshare#diskname",
+		// 		VolumeCapability: &multiWriterVolCap,
+		// 		NodeId:           "vm3",
+		// 	},
+		// 	expectedErr: status.Error(codes.InvalidArgument, "unsupported AccessMode(mode:MULTI_NODE_MULTI_WRITER ) for volume(vol_1#f5713de20cde511e8ba4900#fileshare#diskname)"),
+		// },
+		// {
+		// 	desc: "Read only access mode",
+		// 	req: &csi.ControllerPublishVolumeRequest{
+		// 		VolumeId:         "vol_1#f5713de20cde511e8ba4900#fileshare#diskname",
+		// 		VolumeCapability: &readOnlyVolCap,
+		// 		NodeId:           "vm3",
+		// 	},
+		// 	expectedErr: nil,
+		// },
 		{
-			desc:        "Volume ID missing",
-			req:         &csi.ControllerPublishVolumeRequest{},
-			expectedErr: status.Error(codes.InvalidArgument, "Volume ID not provided"),
-		},
-		{
-			desc: "Volume capability missing",
-			req: &csi.ControllerPublishVolumeRequest{
-				VolumeId: "vol_1",
-			},
-			expectedErr: status.Error(codes.InvalidArgument, "Volume capability not provided"),
-		},
-		{
-			desc: "Node ID missing",
-			req: &csi.ControllerPublishVolumeRequest{
-				VolumeId:         "vol_1",
-				VolumeCapability: &stdVolCap,
-			},
-			expectedErr: status.Error(codes.InvalidArgument, "Node ID not provided"),
-		},
-		{
-			desc: "Valid request disk name empty",
-			req: &csi.ControllerPublishVolumeRequest{
-				VolumeId:         "vol_1",
-				VolumeCapability: &stdVolCap,
-				NodeId:           "vm3",
-			},
-			expectedErr: nil,
-		},
-		{
-			desc: "Get account info returns error",
-			req: &csi.ControllerPublishVolumeRequest{
-				VolumeId:         "vol_2#f5713de20cde511e8ba4900#fileshare#diskname",
-				VolumeCapability: &stdVolCap,
-				NodeId:           "vm3",
-			},
-			expectedErr: status.Error(codes.InvalidArgument, "GetAccountInfo(vol_2#f5713de20cde511e8ba4900#fileshare#diskname) failed with error: Retriable: false, RetryAfter: 0s, HTTPStatusCode: 502, RawError: instance not found"),
-		},
-		{
-			desc: "Unsupported access mode",
+			desc: "Read write access mode",
 			req: &csi.ControllerPublishVolumeRequest{
 				VolumeId:         "vol_1#f5713de20cde511e8ba4900#fileshare#diskname",
-				VolumeCapability: &multiWriterVolCap,
-				NodeId:           "vm3",
-			},
-			expectedErr: status.Error(codes.InvalidArgument, "unsupported AccessMode(mode:MULTI_NODE_MULTI_WRITER ) for volume(vol_1#f5713de20cde511e8ba4900#fileshare#diskname)"),
-		},
-		{
-			desc: "Read only access mode",
-			req: &csi.ControllerPublishVolumeRequest{
-				VolumeId:         "vol_1#f5713de20cde511e8ba4900#fileshare#diskname",
-				VolumeCapability: &readOnlyVolCap,
+				VolumeCapability: &stdVolCap,
 				NodeId:           "vm3",
 			},
 			expectedErr: nil,
@@ -1357,15 +1442,19 @@ func TestControllerPublishVolume(t *testing.T) {
 		d.cloud.VirtualMachinesClient = mockvmclient.NewMockInterface(ctrl)
 		mockStorageAccountsClient := mockstorageaccountclient.NewMockInterface(ctrl)
 		mockVMsClient := d.cloud.VirtualMachinesClient.(*mockvmclient.MockInterface)
+		mockFileClient := mockfileclient.NewMockInterface(ctrl)
 		d.cloud.StorageAccountClient = mockStorageAccountsClient
 		d.cloud.KubeClient = clientSet
 		d.cloud.Environment = azure2.Environment{StorageEndpointSuffix: "abc"}
+		d.cloud.FileClient = mockFileClient
 		mockStorageAccountsClient.EXPECT().ListKeys(gomock.Any(), "vol_2", gomock.Any()).Return(key, &retry.Error{HTTPStatusCode: http.StatusBadGateway, RawError: cloudprovider.InstanceNotFound}).AnyTimes()
 		mockStorageAccountsClient.EXPECT().ListKeys(gomock.Any(), "vol_1", gomock.Any()).Return(key, nil).AnyTimes()
 		mockVMsClient.EXPECT().Get(gomock.Any(), d.cloud.ResourceGroup, "vm1", gomock.Any()).Return(compute.VirtualMachine{}, &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound}).AnyTimes()
 		mockVMsClient.EXPECT().Get(gomock.Any(), d.cloud.ResourceGroup, "vm2", gomock.Any()).Return(compute.VirtualMachine{}, &retry.Error{HTTPStatusCode: http.StatusBadGateway, RawError: cloudprovider.InstanceNotFound}).AnyTimes()
 		mockVMsClient.EXPECT().Get(gomock.Any(), d.cloud.ResourceGroup, "vm3", gomock.Any()).Return(vm, nil).AnyTimes()
 		mockVMsClient.EXPECT().Update(gomock.Any(), d.cloud.ResourceGroup, gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		fileGetPropertiesResponse := azfile.FileGetPropertiesResponse{rawResponse: &http.Response{Status: "200 OK"}}
+		mockFileClient.EXPECT().GetProperties(gomock.Any()).Return(fileGetPropertiesResponse)
 
 		_, err := d.ControllerPublishVolume(context.Background(), test.req)
 		if !reflect.DeepEqual(err, test.expectedErr) {
@@ -1481,8 +1570,6 @@ func TestCreateSnapshot(t *testing.T) {
 func TestDeleteSnapshot(t *testing.T) {
 	d := NewFakeDriver()
 	d.cloud = &azure.Cloud{}
-
-	validSecret := map[string]string{}
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	value := base64.StdEncoding.EncodeToString([]byte("acc_key"))
@@ -1514,9 +1601,17 @@ func TestDeleteSnapshot(t *testing.T) {
 			desc: "Invalid volume ID for snapshot name",
 			req: &csi.DeleteSnapshotRequest{
 				SnapshotId: "vol_1##",
-				Secrets:    validSecret,
+				Secrets:    map[string]string{},
 			},
 			expectedErr: nil,
+		},
+		{
+			desc: "Invalid Snapshot ID",
+			req: &csi.DeleteSnapshotRequest{
+				SnapshotId: "testrg#testAccount#testFileShare#testuuid",
+				Secrets:    map[string]string{"accountName": "TestAccountName", "accountKey": base64.StdEncoding.EncodeToString([]byte("TestAccountKey"))},
+			},
+			expectedErr: status.Error(codes.Internal, "failed to get snapshot name with (testrg#testAccount#testFileShare#testuuid): error parsing volume id: \"testrg#testAccount#testFileShare#testuuid\", should at least contain four #"),
 		},
 	}
 
@@ -2007,4 +2102,15 @@ func TestSetAzureCredentials(t *testing.T) {
 				test.desc, test.accountName, test.accountKey, result, test.expectedName, err, test.expectedErr)
 		}
 	}
+}
+
+func getFakeDriverWithKubeClient(t *testing.T) *Driver {
+	d := NewFakeDriver()
+	d.cloud = &azure.Cloud{}
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	corev1 := mockcorev1.NewMockInterface(ctrl)
+	d.cloud.KubeClient = mockkubeclient.NewMockInterface(ctrl)
+	d.cloud.KubeClient.(*mockkubeclient.MockInterface).EXPECT().CoreV1().Return(corev1).AnyTimes()
+	return d
 }
